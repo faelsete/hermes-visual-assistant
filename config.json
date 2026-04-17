@@ -1,0 +1,19 @@
+{
+  "port": 3000,
+  "hermes_log_path": "./mock_logs",
+  "hermes_command_path": "./hermes_commands/in",
+  "hermes_response_path": "./hermes_commands/out",
+  "parser_patterns": {
+    "researching": ["web_search", "search_web", "browse", "read_url", "fetch"],
+    "coding": ["edit_file", "write_file", "create_file", "replace_file", "multi_replace"],
+    "executing": ["run_command", "execute_code", "terminal", "shell", "npm", "pip"],
+    "social": ["social", "tweet", "telegram", "discord", "whatsapp", "instagram"],
+    "thinking": ["thinking", "planning", "analyzing", "sequential", "reasoning"],
+    "delegating": ["delegate", "assign", "dispatch", "spawn_agent"],
+    "waiting": ["waiting", "awaiting", "pending_input", "user_input"]
+  },
+  "ui": {
+    "fps_cap": 30,
+    "pixel_scale": 2
+  }
+}

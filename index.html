@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Hermes Visual Assistant — Monitor pixel-art retro para agentes de IA em tempo real">
+  <title>🎮 Hermes Visual Assistant</title>
+
+  <!-- Google Fonts: Press Start 2P -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="css/style.css">
+
+  <!-- Favicon (pixel art emoji) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🎮</text></svg>">
+</head>
+<body>
+
+  <!-- ═══ Loading Screen ═══ -->
+  <div id="loading-screen">
+    <div class="loading-title">HERMES</div>
+    <div class="loading-subtitle">Visual Assistant v1.0</div>
+    <div class="loading-bar-container">
+      <div class="loading-bar" id="loading-bar"></div>
+    </div>
+    <div class="loading-subtitle" id="loading-status" style="margin-top: 12px;">Inicializando...</div>
+  </div>
+
+  <!-- ═══ Main App ═══ -->
+  <div id="app">
+
+    <!-- Canvas Area -->
+    <div id="canvas-container">
+      <canvas id="game-canvas"></canvas>
+    </div>
+
+    <!-- Right Panel -->
+    <div id="right-panel">
+
+      <!-- Room Navigation -->
+      <div id="room-nav"></div>
+
+      <!-- Task Section -->
+      <div id="task-section" class="rpg-window" style="border: none; flex: 1; display: flex; flex-direction: column;">
+        <div class="rpg-window-title">
+          <span>📋 TASKS</span>
+          <span id="task-count" style="font-size: 5px; color: var(--silver);">0 pendentes</span>
+        </div>
+
+        <!-- Task Input -->
+        <div class="task-input-row">
+          <input
+            type="text"
+            id="task-title-input"
+            placeholder="Nova task..."
+            maxlength="200"
+            autocomplete="off"
+          >
+          <select id="task-priority-select">
+            <option value="low">🟢</option>
+            <option value="medium" selected>🟡</option>
+            <option value="high">🔴</option>
+          </select>
+          <button class="btn-pixel" id="task-add-btn">+</button>
+        </div>
+
+        <!-- Task List -->
+        <div id="task-list"></div>
+      </div>
+    </div>
+
+    <!-- Status Bar -->
+    <div id="status-bar">
+      <div class="status-item">
+        <span class="status-label">Estado:</span>
+        <span class="status-value" id="status-state">💤 Ocioso</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Uptime:</span>
+        <span class="status-value" id="status-uptime">0s</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Logs:</span>
+        <span class="status-value" id="status-logs">0 logs</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Socket:</span>
+        <span class="status-value" id="status-connection">🔴 Offline</span>
+      </div>
+      <div class="status-item" style="flex: 1; min-width: 100px;">
+        <span class="status-label">Último:</span>
+        <span class="status-value" id="status-last-event" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">—</span>
+      </div>
+      <button id="log-toggle">📜 Ver Logs</button>
+      <button id="stop-btn" class="btn-pixel btn-pixel-danger">🛑 STOP</button>
+    </div>
+  </div>
+
+  <!-- ═══ Chat Modal ═══ -->
+  <div id="chat-modal" class="rpg-window">
+    <div class="rpg-window-title">
+      <span>💬 CHAT — Hermes</span>
+      <button id="chat-close">✕</button>
+    </div>
+    <div id="chat-messages"></div>
+    <div class="chat-input-row">
+      <input
+        type="text"
+        id="chat-input"
+        placeholder="Diga algo para o Hermes..."
+        maxlength="2000"
+        autocomplete="off"
+      >
+      <button class="btn-pixel" id="chat-send">Enviar</button>
+    </div>
+  </div>
+
+  <!-- ═══ Log Viewer ═══ -->
+  <div id="log-viewer" class="rpg-window">
+    <div class="rpg-window-title">
+      <span>📜 LOG STREAM</span>
+    </div>
+    <div class="log-entries"></div>
+  </div>
+
+  <!-- ═══ Toast Container ═══ -->
+  <div id="toast-container"></div>
+
+  <!-- ═══ Scanlines CRT Effect ═══ -->
+  <div id="scanlines"></div>
+
+  <!-- ═══ Scripts ═══ -->
+  <!-- Socket.IO Client (CDN) -->
+  <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+
+  <!-- App Modules -->
+  <script type="module">
+    import { GameEngine } from './js/engine.js';
+    import { ChatModal, TaskPanel, StatusBar, ToastManager, RoomNav, LogViewer } from './js/ui.js';
+    import { SocketClient } from './js/socket-client.js';
+
+    // ─── Loading Animation ───────────────────────────────────
+    const loadingBar = document.getElementById('loading-bar');
+    const loadingStatus = document.getElementById('loading-status');
+    const loadingScreen = document.getElementById('loading-screen');
+
+    function setLoading(percent, text) {
+      if (loadingBar) loadingBar.style.width = `${percent}%`;
+      if (loadingStatus) loadingStatus.textContent = text;
+    }
+
+    setLoading(10, 'Carregando sprites...');
+
+    // ─── Initialize Engine ───────────────────────────────────
+    await new Promise(r => setTimeout(r, 300));
+    setLoading(30, 'Inicializando engine...');
+
+    const canvas = document.getElementById('game-canvas');
+    const engine = new GameEngine(canvas);
+
+    setLoading(50, 'Carregando UI...');
+    await new Promise(r => setTimeout(r, 200));
+
+    // ─── Initialize UI ──────────────────────────────────────
+    const chat = new ChatModal();
+    const tasks = new TaskPanel();
+    const statusBar = new StatusBar();
+    const toasts = new ToastManager();
+    const roomNav = new RoomNav();
+    const logViewer = new LogViewer();
+
+    setLoading(70, 'Conectando WebSocket...');
+    await new Promise(r => setTimeout(r, 200));
+
+    // ─── Initialize Socket ──────────────────────────────────
+    const socket = new SocketClient();
+
+    // ─── Wire up events ─────────────────────────────────────
+
+    // Engine → UI: Click agent opens chat
+    engine.onClick = () => chat.toggle();
+
+    // Engine → UI: Room changes update nav
+    engine.onRoomChange = (roomId) => {
+      roomNav.update(engine.getRoomList());
+      toasts.show(`Entrou: ${roomId}`, 'event', 2000);
+    };
+
+    // Room Nav → Engine: Navigate on click
+    roomNav.onRoomClick = (roomId) => {
+      engine.navigateToRoom(roomId);
+    };
+
+    // Chat → Socket: Send messages
+    chat.onSendMessage = (message) => {
+      socket.sendChat(message);
+    };
+
+    // Tasks → Socket: Task operations
+    tasks.onCreateTask = (title, priority) => {
+      socket.createTask(title, priority);
+    };
+
+    tasks.onDeleteTask = (taskId) => {
+      socket.deleteTask(taskId);
+    };
+
+    tasks.onDelegateTask = (taskId) => {
+      socket.delegateTask(taskId);
+      toasts.show('🎯 Task delegada para Hermes!', 'success');
+    };
+
+    tasks.onUpdateTask = (taskId, status) => {
+      socket.updateTask(taskId, status);
+    };
+
+    // Stop button
+    document.getElementById('stop-btn')?.addEventListener('click', () => {
+      socket.sendStop();
+      toasts.show('🛑 Sinal STOP enviado!', 'warning');
+    });
+
+    // Socket → UI/Engine: Handle server events
+    socket.onConnected = () => {
+      statusBar.setConnected(true);
+      toasts.show('🔌 Conectado ao servidor!', 'success');
+    };
+
+    socket.onDisconnected = () => {
+      statusBar.setConnected(false);
+      toasts.show('🔌 Desconectado do servidor', 'error');
+    };
+
+    socket.onInitialData = (data) => {
+      engine.setAgentState(data.agentState);
+      tasks.updateTaskList(data.tasks);
+      chat.loadHistory(data.chatHistory);
+      statusBar.updateState(data.agentState);
+      roomNav.update(engine.getRoomList());
+
+      // Load initial logs
+      for (const log of data.logs) {
+        logViewer.addLog(log);
+      }
+
+      // Update task count
+      const pending = data.tasks.filter(t => t.status === 'pending' || t.status === 'active').length;
+      const countEl = document.getElementById('task-count');
+      if (countEl) countEl.textContent = `${pending} pendente${pending !== 1 ? 's' : ''}`;
+    };
+
+    socket.onStateChange = (data) => {
+      engine.setAgentState(data.state, data.room);
+      statusBar.updateState(data.state);
+      roomNav.update(engine.getRoomList());
+      toasts.show(`${data.state.toUpperCase()}: ${data.message.substring(0, 60)}`, 'event', 3000);
+    };
+
+    socket.onNewLog = (data) => {
+      logViewer.addLog(data);
+    };
+
+    socket.onChatResponse = (data) => {
+      chat.addMessage(data);
+    };
+
+    socket.onTaskUpdate = (data) => {
+      tasks.addOrUpdateTask(data);
+      const pending = tasks.tasks.filter(t => t.status === 'pending' || t.status === 'active').length;
+      const countEl = document.getElementById('task-count');
+      if (countEl) countEl.textContent = `${pending} pendente${pending !== 1 ? 's' : ''}`;
+    };
+
+    socket.onTasksSync = (data) => {
+      tasks.updateTaskList(data);
+    };
+
+    socket.onMetrics = (data) => {
+      statusBar.updateMetrics(data);
+    };
+
+    // ─── Connect and Start ──────────────────────────────────
+    socket.connect();
+
+    setLoading(90, 'Iniciando game loop...');
+    await new Promise(r => setTimeout(r, 300));
+
+    // Initialize room navigation
+    roomNav.update(engine.getRoomList());
+
+    // Start the engine
+    engine.start();
+
+    setLoading(100, 'Pronto!');
+    await new Promise(r => setTimeout(r, 500));
+
+    // Hide loading screen
+    loadingScreen.classList.add('hidden');
+
+    // ─── Keyboard shortcuts ─────────────────────────────────
+    document.addEventListener('keydown', (e) => {
+      // C = Toggle chat
+      if (e.key === 'c' && !chat.visible && document.activeElement?.tagName !== 'INPUT') {
+        chat.toggle();
+      }
+      // L = Toggle logs
+      if (e.key === 'l' && document.activeElement?.tagName !== 'INPUT') {
+        logViewer.toggle();
+      }
+    });
+
+    console.log('🎮 Hermes Visual Assistant v1.0 — Pronto!');
+    console.log('Atalhos: C = Chat | L = Logs | ESC = Fechar modal');
+  </script>
+
+</body>
+</html>

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+mock_logs/
+hermes_commands/
+*.log
+.env
+.DS_Store
+Thumbs.db
+*.heapsnapshot
