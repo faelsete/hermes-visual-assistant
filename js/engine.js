@@ -74,22 +74,22 @@ class Agent {
       const newX = this.x + dx * ratio;
       const newY = this.y + dy * ratio;
 
-      // Check walkability
-      const tileX = Math.floor((newX + 8) / TILE_SIZE);
-      const tileY = Math.floor((newY + 8) / TILE_SIZE);
+      // Check walkability (center of 32x32 sprite)
+      const tileX = Math.floor((newX + 16) / TILE_SIZE);
+      const tileY = Math.floor((newY + 16) / TILE_SIZE);
 
       if (roomSystem.isWalkable(tileX, tileY)) {
         this.x = newX;
         this.y = newY;
       } else {
         // Try sliding along axes
-        const tileXOnly = Math.floor((newX + 8) / TILE_SIZE);
-        const tileYCurrent = Math.floor((this.y + 8) / TILE_SIZE);
+        const tileXOnly = Math.floor((newX + 16) / TILE_SIZE);
+        const tileYCurrent = Math.floor((this.y + 16) / TILE_SIZE);
         if (roomSystem.isWalkable(tileXOnly, tileYCurrent)) {
           this.x = newX;
         }
-        const tileXCurrent = Math.floor((this.x + 8) / TILE_SIZE);
-        const tileYOnly = Math.floor((newY + 8) / TILE_SIZE);
+        const tileXCurrent = Math.floor((this.x + 16) / TILE_SIZE);
+        const tileYOnly = Math.floor((newY + 16) / TILE_SIZE);
         if (roomSystem.isWalkable(tileXCurrent, tileYOnly)) {
           this.y = newY;
         }
@@ -179,15 +179,15 @@ export class GameEngine {
     const agentBounds = {
       x: this.agent.x,
       y: this.agent.y,
-      w: 16,
-      h: 16,
+      w: 32,
+      h: 32,
     };
 
     if (
-      x >= agentBounds.x - 4 &&
-      x <= agentBounds.x + agentBounds.w + 4 &&
-      y >= agentBounds.y - 4 &&
-      y <= agentBounds.y + agentBounds.h + 4
+      x >= agentBounds.x - 6 &&
+      x <= agentBounds.x + agentBounds.w + 6 &&
+      y >= agentBounds.y - 6 &&
+      y <= agentBounds.y + agentBounds.h + 6
     ) {
       if (this.onClick) this.onClick();
       return;
@@ -223,10 +223,10 @@ export class GameEngine {
     } else {
       // Check agent hover
       if (
-        x >= this.agent.x - 4 &&
-        x <= this.agent.x + 20 &&
-        y >= this.agent.y - 4 &&
-        y <= this.agent.y + 20
+        x >= this.agent.x - 6 &&
+        x <= this.agent.x + 38 &&
+        y >= this.agent.y - 6 &&
+        y <= this.agent.y + 38
       ) {
         this.canvas.style.cursor = 'pointer';
       } else {
@@ -296,14 +296,14 @@ export class GameEngine {
       }
 
       // Burst particles on room entry
-      this.particles.burst('sparkles', this.agent.x + 8, this.agent.y + 8, 8);
+      this.particles.burst('sparkles', this.agent.x + 16, this.agent.y + 16, 12);
     }
 
     // Update agent
     this.agent.update(deltaTime, this.rooms);
 
     // Update particles
-    this.particles.setOrigin(this.agent.x + 8, this.agent.y - 4);
+    this.particles.setOrigin(this.agent.x + 16, this.agent.y - 4);
     this.particles.update(deltaTime);
   }
 
@@ -350,13 +350,13 @@ export class GameEngine {
 
   drawAgentShadow(ctx) {
     ctx.save();
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
     ctx.beginPath();
     ctx.ellipse(
-      this.agent.x + 8,
-      this.agent.y + 16,
-      6,
-      2,
+      this.agent.x + 16,
+      this.agent.y + 30,
+      10,
+      3,
       0,
       0,
       Math.PI * 2
@@ -367,8 +367,8 @@ export class GameEngine {
 
   drawStateBubble(ctx) {
     const alpha = Math.min(1, this.agent.stateBubbleTimer / 500);
-    const bubbleX = this.agent.x + 8;
-    const bubbleY = this.agent.y - 14;
+    const bubbleX = this.agent.x + 16;
+    const bubbleY = this.agent.y - 10;
 
     ctx.save();
     ctx.globalAlpha = alpha;
