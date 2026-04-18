@@ -1,12 +1,11 @@
 import express from 'express';
-import { createServer } from 'node:http';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createNetServer, type Socket as NetSocket } from 'node:net';
 import { Server as SocketServer } from 'socket.io';
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { LogWatcher } from './watcher.js';
-import { LogParser } from './parser.js';
 import { CommandHandler } from './commands.js';
 import { ClientCommandSchema, STATE_ROOM_MAP } from './types.js';
 import type {
@@ -40,35 +39,30 @@ const resolveConfigPath = (p: string): string => {
   return path.resolve(ROOT_DIR, p);
 };
 
-config.hermes_log_path = resolveConfigPath(config.hermes_log_path);
 config.hermes_command_path = resolveConfigPath(config.hermes_command_path);
 config.hermes_response_path = resolveConfigPath(config.hermes_response_path);
 
-// ─── Ensure mock_logs exists for dev ───────────────────────────
-if (!existsSync(config.hermes_log_path)) {
-  mkdirSync(config.hermes_log_path, { recursive: true });
-  console.log(`📁 Criado diretório de logs: ${config.hermes_log_path}`);
-}
+// ─── Unix socket path ──────────────────────────────────────────
+const SOCKET_PATH = '/tmp/hermes-visual.sock';
 
 // ─── State ─────────────────────────────────────────────────────
 let currentState: AgentState = 'idle';
 const recentLogs: LogEvent[] = [];
 const MAX_RECENT_LOGS = 200;
 const startTime = Date.now();
+let pluginEventsReceived = 0;
 
 // Rate limiting
 const clientMessageCounts = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT = 30; // messages per minute
+const RATE_LIMIT = 30;
 const RATE_WINDOW = 60_000;
 
 // ─── Initialize modules ───────────────────────────────────────
-const parser = new LogParser(config.parser_patterns);
-const watcher = new LogWatcher(config.hermes_log_path);
 const commands = new CommandHandler(config);
 
 // ─── Express + Socket.IO ──────────────────────────────────────
 const app = express();
-const httpServer = createServer(app);
+const httpServer = createHttpServer(app);
 const io = new SocketServer<ClientEvents, ServerEvents>(httpServer, {
   cors: { origin: '*' },
   pingInterval: 10_000,
@@ -84,7 +78,7 @@ app.get('/health', (_req, res) => {
     status: 'ok',
     uptime: Math.floor((Date.now() - startTime) / 1000),
     agentState: currentState,
-    logsWatched: watcher.getWatchedFileCount(),
+    pluginEvents: pluginEventsReceived,
     totalLogs: recentLogs.length,
   });
 });
@@ -110,7 +104,7 @@ function buildMetrics(): Metrics {
 
   return {
     uptime: Math.floor((Date.now() - startTime) / 1000),
-    totalLogs: parser.getLineCount(),
+    totalLogs: pluginEventsReceived,
     tasksCompleted: stats.completed,
     tasksPending: stats.pending,
     tasksActive: stats.active,
@@ -118,6 +112,59 @@ function buildMetrics(): Metrics {
     lastEventTime: lastLog?.timestamp ?? new Date().toISOString(),
     currentState,
   };
+}
+
+// ─── Process plugin event ──────────────────────────────────────
+function processPluginEvent(payload: Record<string, unknown>): void {
+  pluginEventsReceived++;
+
+  const state = (payload.state as AgentState) ?? 'idle';
+  const tool = (payload.tool as string) ?? undefined;
+  const message = (payload.message as string) ?? '';
+  const eventType = (payload.event as string) ?? 'unknown';
+  const sessionId = (payload.session_id as string) ?? '';
+
+  const logEvent: LogEvent = {
+    timestamp: new Date().toISOString(),
+    type: state,
+    tool,
+    message: message.substring(0, 300),
+    metadata: { eventType, sessionId },
+  };
+
+  // Store log
+  recentLogs.push(logEvent);
+  if (recentLogs.length > MAX_RECENT_LOGS) {
+    recentLogs.shift();
+  }
+
+  // Emit log to all clients
+  io.emit('new_log', logEvent);
+
+  // State change → room navigation
+  if (state !== currentState) {
+    currentState = state;
+    const room = STATE_ROOM_MAP[currentState] ?? 'hub';
+
+    io.emit('state_change', {
+      state: currentState,
+      tool,
+      message,
+      room,
+    });
+
+    console.log(
+      `[Plugin] ${eventType} → ${currentState.toUpperCase()} → ${room} | ${message.substring(0, 80)}`
+    );
+  } else {
+    // Same state but new activity — log it
+    console.log(
+      `[Plugin] ${eventType} | ${tool ?? ''} | ${message.substring(0, 60)}`
+    );
+  }
+
+  // Update metrics for all clients
+  io.emit('metrics', buildMetrics());
 }
 
 // ─── Socket.IO connections ─────────────────────────────────────
@@ -132,12 +179,10 @@ io.on('connection', (socket) => {
     chatHistory: commands.getChatHistory(),
   });
 
-  // Send metrics right away
   socket.emit('metrics', buildMetrics());
 
   // Handle commands
   socket.on('command', async (data) => {
-    // Rate limit
     if (!checkRateLimit(socket.id)) {
       socket.emit('chat_response', {
         id: `sys_${Date.now()}`,
@@ -148,7 +193,6 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Validate
     const parsed = ClientCommandSchema.safeParse(data);
     if (!parsed.success) {
       console.error('[Socket] ❌ Comando inválido:', parsed.error.message);
@@ -162,7 +206,6 @@ io.on('connection', (socket) => {
         const chatMsg = await commands.sendChat(cmd.message);
         io.emit('chat_response', chatMsg);
 
-        // Simulate agent acknowledgment
         setTimeout(() => {
           const agentMsg = commands.addAgentMessage(
             `📨 Comando recebido: "${cmd.message.substring(0, 100)}"`
@@ -228,65 +271,90 @@ io.on('connection', (socket) => {
   });
 });
 
-// ─── Log watcher → events ──────────────────────────────────────
-watcher.on('line', ({ line }: { filePath: string; line: string }) => {
-  const event = parser.parseLine(line);
-  if (!event) return;
+// ─── Unix Domain Socket (receives events from Hermes plugin) ──
+function startUnixSocket(): void {
+  // Clean up stale socket file
+  if (existsSync(SOCKET_PATH)) {
+    try {
+      unlinkSync(SOCKET_PATH);
+    } catch {
+      // ignore
+    }
+  }
 
-  // Update state
-  if (event.type !== currentState) {
-    currentState = event.type;
-    const room = STATE_ROOM_MAP[currentState] ?? 'hub';
+  const unixServer = createNetServer((conn: NetSocket) => {
+    let buffer = '';
 
-    io.emit('state_change', {
-      state: currentState,
-      tool: event.tool,
-      message: event.message,
-      room,
+    conn.on('data', (chunk) => {
+      buffer += chunk.toString();
     });
 
-    console.log(`[State] ${currentState.toUpperCase()} → Room: ${room} | ${event.message.substring(0, 80)}`);
-  }
+    conn.on('end', () => {
+      for (const line of buffer.split('\n').filter(Boolean)) {
+        try {
+          const payload = JSON.parse(line) as Record<string, unknown>;
+          processPluginEvent(payload);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[Unix] ❌ JSON parse error: ${msg}`);
+        }
+      }
+    });
 
-  // Store log
-  recentLogs.push(event);
-  if (recentLogs.length > MAX_RECENT_LOGS) {
-    recentLogs.shift();
-  }
+    conn.on('error', (err) => {
+      console.error(`[Unix] ❌ Connection error: ${err.message}`);
+    });
+  });
 
-  io.emit('new_log', event);
-});
+  unixServer.listen(SOCKET_PATH, () => {
+    console.log(`[Unix] 🔌 Ouvindo em: ${SOCKET_PATH}`);
+  });
+
+  unixServer.on('error', (err) => {
+    console.error(`[Unix] ❌ Server error: ${err.message}`);
+  });
+
+  // Cleanup on exit
+  const cleanup = () => {
+    if (existsSync(SOCKET_PATH)) {
+      try {
+        unlinkSync(SOCKET_PATH);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  process.on('SIGINT', () => {
+    cleanup();
+    process.exit(0);
+  });
+  process.on('SIGTERM', () => {
+    cleanup();
+    process.exit(0);
+  });
+}
 
 // ─── Periodic metrics ──────────────────────────────────────────
 setInterval(() => {
   io.emit('metrics', buildMetrics());
 }, 5000);
 
-// ─── Graceful shutdown ─────────────────────────────────────────
-async function shutdown(): Promise<void> {
-  console.log('\n🛑 Encerrando...');
-  await watcher.stop();
-  io.close();
-  httpServer.close();
-  process.exit(0);
-}
-
-process.on('SIGINT', () => void shutdown());
-process.on('SIGTERM', () => void shutdown());
-
 // ─── Start ─────────────────────────────────────────────────────
 async function main(): Promise<void> {
   await commands.init();
-  await watcher.start();
+
+  // Start Unix socket for Hermes plugin events
+  startUnixSocket();
 
   httpServer.listen(config.port, () => {
     console.log('');
     console.log('╔══════════════════════════════════════════════╗');
-    console.log('║     🎮 HERMES VISUAL ASSISTANT v1.0.0       ║');
+    console.log('║     🎮 HERMES VISUAL ASSISTANT v2.0.0       ║');
     console.log('╠══════════════════════════════════════════════╣');
     console.log(`║  🌐 http://localhost:${config.port}                  ║`);
-    console.log(`║  📁 Logs: ${config.hermes_log_path.substring(0, 32).padEnd(32)}  ║`);
-    console.log(`║  📋 Commands: ${config.hermes_command_path.substring(0, 28).padEnd(28)}  ║`);
+    console.log(`║  🔌 Plugin: ${SOCKET_PATH.padEnd(30)}  ║`);
+    console.log('║  📡 Modo: Plugin (real-time hooks)           ║');
     console.log('╠══════════════════════════════════════════════╣');
     console.log('║  Ctrl+C para encerrar                       ║');
     console.log('╚══════════════════════════════════════════════╝');
